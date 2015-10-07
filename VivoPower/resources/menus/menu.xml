@@ -1,0 +1,6 @@
+<menu id="MainMenu">
+    <!-- <menu-item id="search">Find Sensors</menu-item> -->
+    <menu-item id="id">Device ID (0 for any)</menu-item>
+    <menu-item id="reset">Reset Device ID</menu-item>
+    <menu-item id="calibrate">Calibrate</menu-item>
+</menu>

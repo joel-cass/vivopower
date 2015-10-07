@@ -1,0 +1,5 @@
+<resources>
+    <string id="AppName">VivoPower</string>
+
+    <bitmap id="LauncherIcon" filename="images/launcher_icon.png" />
+</resources>
