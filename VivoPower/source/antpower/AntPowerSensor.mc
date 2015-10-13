@@ -48,17 +48,28 @@ class AntPowerSensor extends Ant.GenericChannel
 	static const CALIBRATION_RX_ACK = 0xAC;
 	static const CALIBRATION_RX_FAIL = 0xAF;
 	
+	// use this to check if the sensor is connected
     var searching = false;
     
+    // device managment
     hidden var _channel;
     hidden var _data;
     hidden var _device_number;
     hidden var _device;
     
+    // listeners
     hidden var _pages = [];
     hidden var _listeners = [];
     hidden var _calibration_listener;
     
+    // timers for self-checking
+	hidden var _timer;
+	hidden var _lastMessage;
+    
+    // Standard initialiser. Do not call directly
+	// Usage: var sensor = new AntPowerSensor(0, [AntPowerSensor.PAGE_POWER_ONLY])
+	//  device_number = ANT device ID. Use 0 for wildcard
+	//  pages_to_watch = Array of AntPowerSensor.PAGE_* constants. Omit or pass empty array for all
     function initialize(device_number, pages_to_watch)
     {
 		LoggingHelper.log("Initialising");
@@ -74,11 +85,18 @@ class AntPowerSensor extends Ant.GenericChannel
 		
 		_data = new AntData();
 		
+		_timer = new Timer.Timer();
+		_timer.start(method(:onTimer), 10 * 1000, true);
+		_lastMessage = Time.now();
+		
 		//LoggingHelper.log("n="+device_number+",t="+DEVICE_TYPE+",rf="+SEARCH_TRANSMISSION_TYPE+",p="+CHANNEL_PERIOD+",f="+CHANNEL_FREQUENCY+"");
 				
 		open();
     }
 
+
+	// Open Connection. This is done automatically on initialisation
+	// Usage: sensor.open();
     function open()
     {
         LoggingHelper.log("Creating channel");
@@ -116,6 +134,9 @@ class AntPowerSensor extends Ant.GenericChannel
 		LoggingHelper.setStatus("Searching");
     }
 
+
+	// Close connection. This is called when the object is destroyed
+	// usage: sensor.close();
     function close()
     {
 		LoggingHelper.log("Connection Closed.");
@@ -125,26 +146,96 @@ class AntPowerSensor extends Ant.GenericChannel
         GenericChannel.release();
     }
     
+    
+    // Re-open connection. Use this when sensor is not responding
+    // Usage: sensor.reopen();
     function reopen() {
 		LoggingHelper.log("Re-opening connection");
     	close();
     	open();
    	}
 
+
+	// Add listeners to notify application when sensor receives a message.
+	// Note that sensors can be noisy resulting in around to 4 updates per second - this can impact app performance
+	// Usage: sensor.addListener(method(:onUpdate), AntPowerSensor.PAGE_POWER_ONLY);
+	//  listener: A method that accepts the AntData object, e.g. onUpdate(data) { var watts = data.power; }
+	//  page: AntPowerSensor.PAGE constant. Is compulsory
 	function addListener(listener, page) {
 		_listeners = ArrayHelper.append(_listeners, page);
 		_listeners = ArrayHelper.append(_listeners, listener);
 	}
 
-//	function clearListener(listener) {
-//		_listeners = ArrayHelper.remove(_listeners, listener);
-//	}
 
+	// Clear all listeners
+	// Usage: sensor.clearListeners();
 	function clearListeners() {
 		_listeners = [];
 	}
 	
-	function notifyListeners(page) {
+	
+	// Get ID of connected (or configured) device
+	// Usage: var device_number = sensor.getDeviceId();
+	function getDeviceId() {
+		return _device_number;
+	}
+
+
+	// Get the data representing the latest information from the sensor.
+	// This is another way to get data instead of events and could be done on a timer.
+	// Returns AntData object
+	// Usage: var data = sensor.getData();
+	function getData() {
+		return _data;
+	}
+
+	
+	// Send Calibration message
+	// Usage: sensor.calibrate(method(:onCalibrate));
+	//  listener: a method that accepts an AntData object, e.g. onCalibrate(data) { var result = data.calibration_value; }
+    function calibrate(listener)
+    {
+        _calibration_listener = listener;
+
+        if( !searching )
+        {
+            //Create and populat the data payload
+            var payload = new [8];
+            payload[0] = PAGE_CALIBRATION;  //Calibration data page
+            payload[1] = CALIBRATION_TX;  //Calibration command
+            payload[2] = 0xFF; //Reserved
+            payload[3] = 0xFF; //Reserved
+            payload[4] = 0xFF; //Reserved
+            payload[5] = 0xFF; //Reserved
+            payload[6] = 0xFF; //Reserved
+            payload[7] = 0xFF; //Reserved
+          
+          	_data.calibration_success = null;
+          
+          	//Form and send the message
+            var message = new Ant.Message();
+            message.setPayload(payload);
+            GenericChannel.sendAcknowledge(message);
+
+			LoggingHelper.log("CALIBRATION MESSAGE SENT");
+        }
+
+    }
+
+	// *** PRIVATE METHODS BELOW ***
+
+	// execute a timer to check the activity of the sensor. Reset if there is a lapse.
+	function onTimer() {
+		var secondsSinceLastUpdate = Time.now().subtract(_lastMessage).value();
+		if (secondsSinceLastUpdate > 30) {
+			LoggingHelper.log("No updates for "+secondsSinceLastUpdate+" seconds. Resetting connection");
+			reopen();
+			_lastMessage = Time.now();
+		}
+	}
+
+	// Notify Listeners. Used internally.
+	hidden function notifyListeners(page) {
 		for(var i = 0; i < _listeners.size(); i+=2) {
 			System.println(i + ": " + _listeners[i] + " (page="+page+")");
 			if (_listeners[i] == page) {
@@ -153,18 +244,13 @@ class AntPowerSensor extends Ant.GenericChannel
 		}
 	}
 
-	function getDeviceId() {
-		return _device_number;
-	}
-
-	function getData() {
-		return _data;
-	}
-
+	// Receive ANT message, used internally.
     function onMessage(msg)
     {
         // Parse the payload
         var payload = msg.getPayload();
+        
+        _lastMessage = Time.now();
 
 		//LoggingHelper.log("Received Message: " + msg.messageId);
 		//LoggingHelper.log(payload.toString());
@@ -233,9 +319,12 @@ class AntPowerSensor extends Ant.GenericChannel
         }
     }
 
+	// keep track of previous payloads by page. 
+	// this is used because many message types rely on previous messages' data
 	hidden var _previous_payloads = {};
 	
-	function process (payload) {
+	// Process ANT payload. Used internally
+	hidden function process (payload) {
 		var pageNumber = payload[0];
 		
 		//System.println("RECEIVED PAGE: " + pageNumber + " = " + payload);
@@ -382,44 +471,21 @@ class AntPowerSensor extends Ant.GenericChannel
 		}
 	}
 
-    function calibrate(listener)
-    {
-        _calibration_listener = listener;
 
-        if( !searching )
-        {
-            //Create and populat the data payload
-            var payload = new [8];
-            payload[0] = PAGE_CALIBRATION;  //Calibration data page
-            payload[1] = CALIBRATION_TX;  //Calibration command
-            payload[2] = 0xFF; //Reserved
-            payload[3] = 0xFF; //Reserved
-            payload[4] = 0xFF; //Reserved
-            payload[5] = 0xFF; //Reserved
-            payload[6] = 0xFF; //Reserved
-            payload[7] = 0xFF; //Reserved
-          
-          	_data.calibration_success = null;
-          
-          	//Form and send the message
-            var message = new Ant.Message();
-            message.setPayload(payload);
-            GenericChannel.sendAcknowledge(message);
-
-			LoggingHelper.log("CALIBRATION MESSAGE SENT");
-        }
-
-    }
-
-	function getBits(value, start, length) {
+	// function to split an 8 bit field into smaller values
+	hidden function getBits(value, start, length) {
 		return (value >> (8-(start+length))) & ((1 << length)-1);
 	}
 
-	function combineBytes(lsb, msb) {
+
+	// function to merge an integer from two 8 bit fields
+	hidden function combineBytes(lsb, msb) {
 		return msb << 8 | lsb;
 	}
 
-	function calculateTorque(power, cadence) {
+
+	// function to calculate torque from power values
+	hidden function calculateTorque(power, cadence) {
 		if (power > 0 && cadence > 0) {
 			return power / (2 * Math.PI * cadence / 60);
 		} else {
@@ -427,6 +493,9 @@ class AntPowerSensor extends Ant.GenericChannel
 		}
 	}
 
+	// Object that represents all sensor data.
+	// Is stored as an instance variable of AntPowerSensor
+	// Can be retrieved using sensor.getData();
     class AntData
     {
 
