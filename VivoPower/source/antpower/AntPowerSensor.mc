@@ -86,7 +86,7 @@ class AntPowerSensor extends Ant.GenericChannel
 		_data = new AntData();
 		
 		_timer = new Timer.Timer();
-		_timer.start(method(:onTimer), 10 * 1000, true);
+		_timer.start(method(:onTimer), 10 * 1000, false);
 		_lastMessage = Time.now();
 		
 		//LoggingHelper.log("n="+device_number+",t="+DEVICE_TYPE+",rf="+SEARCH_TRANSMISSION_TYPE+",p="+CHANNEL_PERIOD+",f="+CHANNEL_FREQUENCY+"");
@@ -146,14 +146,26 @@ class AntPowerSensor extends Ant.GenericChannel
         GenericChannel.release();
     }
     
-    
     // Re-open connection. Use this when sensor is not responding
     // Usage: sensor.reopen();
+    var reopening = false;
     function reopen() {
-		LoggingHelper.log("Re-opening connection");
-    	close();
-    	open();
-   	}
+        if (!reopening) {
+            LoggingHelper.log("Re-opening connection");
+            close();
+            _timer.stop();
+            _timer.start(method(:reopen_finish), 5000, false);
+            reopening = true;
+        } else {
+            LoggingHelper.log("Re-open request already in progress");
+        }
+    }
+    function reopen_finish () {
+        open();
+        reopening = false;
+        _timer.start(method(:onTimer), 10 * 1000, false);
+        LoggingHelper.log("Connection re-opened.");
+    }
 
 
 	// Add listeners to notify application when sensor receives a message.
@@ -232,6 +244,7 @@ class AntPowerSensor extends Ant.GenericChannel
 			reopen();
 			_lastMessage = Time.now();
 		}
+		_timer.start(method(:onTimer), 10 * 1000, false);
 	}
 
 	// Notify Listeners. Used internally.
